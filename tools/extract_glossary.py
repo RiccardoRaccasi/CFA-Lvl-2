@@ -1,77 +1,118 @@
 # -*- coding: utf-8 -*-
-import pymupdf, re, json
-SP='/tmp/claude-0/-home-user-CFA-Lvl-2/80c992d8-9583-5bce-bcee-2b287a06518d/scratchpad/work'
-PDF='/home/user/CFA-Lvl-2/cfa-program2026L2V{}.pdf'
-VOL={1:"Quantitative Methods",2:"Economics",3:"Financial Statement Analysis",4:"Corporate Issuers",
- 5:"Equity Valuation",6:"Fixed Income",7:"Derivatives",8:"Alternative Investments",9:"Portfolio Management",
- 10:"Ethical and Professional Standards"}
+"""Extract the official CFA Level II glossary (term / definition pairs).
+
+The glossary PDF is set in two columns; terms are MyriadPro-Bold and definitions
+WarnockPro-Regular, so the pair boundary is a font change, not a layout guess.
+"""
+import pymupdf, re, json, sys, os
+
+PDF = sys.argv[1] if len(sys.argv) > 1 else "cfa-program2026L2glossary.pdf"
+OUT = sys.argv[2] if len(sys.argv) > 2 else "glossary_official.json"
+def column_split(page):
+    """Find the gutter for this page: column x-origins move between odd and even
+    pages, so a fixed midpoint misassigns whole columns."""
+    xs = sorted({round(s["bbox"][0], 1)
+                 for b in page.get_text("dict")["blocks"]
+                 for l in b.get("lines", [])
+                 for s in l["spans"]
+                 if s["text"].strip()
+                 and s["font"].startswith("MyriadPro-Bold")
+                 and not s["font"].startswith("MyriadPro-BoldCond")})
+    if len(xs) < 2:
+        return page.rect.width / 2
+    # The split must sit in the gutter, just left of the right column's origin —
+    # not midway between the two origins, since left-column body text runs well
+    # past that midpoint and would be misfiled into the right column.
+    gap, right_origin = 0.0, None
+    for a, b in zip(xs, xs[1:]):
+        if b - a > gap:
+            gap, right_origin = b - a, b
+    return (right_origin - 6.0) if gap > 50 else page.rect.width / 2
+
 def norm(t):
-    for a,b in [('​',''),(' ',' '),('­',''),('ﬁ','fi'),('ﬂ','fl'),
-                ('’',"'"),('‘',"'"),('“','"'),('”','"'),(' ',' ')]:
-        t=t.replace(a,b)
-    return re.sub(r'[ \t]{2,}',' ',t.replace('\t',' ')).strip()
+    for a, b in [('​',''),(' ',' '),('­',''),('ﬁ','fi'),('ﬂ','fl'),
+                 ('’',"'"),('‘',"'"),('“','"'),('”','"'),(' ',' ')]:
+        t = t.replace(a, b)
+    return re.sub(r'[ \t]{2,}', ' ', t.replace('\t', ' '))
+
 def dehy(t):
-    t=re.sub(r'(\w)[-‐]\s*\n\s*(\w)',r'\1\2',t)
-    return re.sub(r'\s{2,}',' ',re.sub(r'\n+',' ',t)).strip()
+    t = re.sub(r'(\w)[-‐]\s*\n\s*(\w)', r'\1\2', t)
+    return re.sub(r'\s{2,}', ' ', re.sub(r'\n+', ' ', t)).strip()
 
-STOP={'exhibit','panel','solution','example','summary','introduction','learning module','practice problems'}
-BADSUF=re.compile(r'\b(is|are|the|of|in|and|for|to|a|an|that|which|with|by|as|or)$',re.I)
+def spans_in_order(doc):
+    """Yield (kind, text) across the glossary, left column then right, per page.
 
-def blocks(page):
-    out=[]
-    for b in page.get_text("dict")["blocks"]:
-        lines=b.get("lines",[])
-        if not lines: continue
-        txt=[]; bolds=[]
-        for l in lines:
-            run=[]
-            for s in l["spans"]:
-                txt.append(s["text"])
-                if s["font"].startswith('MyriadPro-Bold') and 9.0<=s["size"]<=10.6: run.append(s["text"])
-                else:
-                    if run: bolds.append("".join(run)); run=[]
-            if run: bolds.append("".join(run))
-            txt.append("\n")
-        out.append((dehy(norm("".join(txt))), [norm(x) for x in bolds],
-                    any(s["font"].startswith('WarnockPro-Regular') for l in lines for s in l["spans"])))
-    return out
-
-def sentence_for(body, term):
-    i=body.find(term)
-    if i<0: return None
-    start=body.rfind('. ', 0, i)
-    start=0 if start<0 else start+2
-    end=body.find('. ', i)
-    end=len(body) if end<0 else end+1
-    s=body[start:end].strip()
-    if len(s)<40:
-        nxt=body.find('. ', end)
-        s=body[start:(len(body) if nxt<0 else nxt+1)].strip()
-    return s[:420]
-
-out={}; 
-for v in range(1,11):
-    doc=pymupdf.open(PDF.format(v))
-    starts=[i for i in range(doc.page_count) if 'L E A R N I N G M O D U L E' in doc[i].get_text().replace(' ',' ')]
+    Columns are split per SPAN, not per line: PyMuPDF sometimes merges a line
+    across the gutter, which would otherwise interleave the two columns.
+    """
     for p in range(doc.page_count):
-        lm=sum(1 for s in starts if s<=p)
-        for body, bolds, isbody in blocks(doc[p]):
-            if not isbody or len(body)<80: continue
-            for term in bolds:
-                t=term.strip(" .,;:()")
-                if not (3<len(t)<58): continue
-                if not re.match(r"^[A-Za-z][A-Za-z0-9 '–\-/(),\.]+$",t): continue
-                if t.lower() in STOP or BADSUF.search(t): continue
-                if sum(c.isdigit() for c in t)>2: continue
-                key=t.lower()
-                sent=sentence_for(body,term)
-                if not sent or len(sent)<45: continue
-                if key not in out or len(out[key]['def'])<len(sent)<400:
-                    out[key]={"term":t,"def":sent,"topic":VOL[v],"vol":v,"lm":lm}
+        page = doc[p]
+        split = column_split(page)
+        cols = {0: [], 1: []}
+        for b in page.get_text("dict")["blocks"]:
+            for l in b.get("lines", []):
+                for s in l["spans"]:
+                    f, txt = s["font"], s["text"]
+                    if not txt.strip():
+                        continue
+                    if f.startswith("MyriadPro-BoldCond"):          # running header
+                        continue
+                    if re.fullmatch(r'G-\d+|Glossary', txt.strip()):
+                        continue
+                    x0, y0 = s["bbox"][0], s["bbox"][1]
+                    col = 0 if x0 < split else 1
+                    kind = "term" if (f.startswith("MyriadPro-Bold") and 8.5 <= s["size"] <= 9.4) else "def"
+                    cols[col].append((round(y0, 1), round(x0, 1), kind, txt))
+        for c in (0, 1):
+            # bucket spans into visual rows (baselines jitter by a point or two),
+            # then read each row left to right
+            rows = []
+            for item in sorted(cols[c]):
+                if rows and abs(item[0] - rows[-1][0]) <= 2.5:
+                    rows[-1][1].append(item)
+                else:
+                    rows.append((item[0], [item]))
+            for _, items in rows:
+                items.sort(key=lambda z: z[1])
+                for y, x, kind, txt in items:
+                    yield (kind, txt)
+                yield ("nl", "\n")
+
+def extract(path):
+    doc = pymupdf.open(path)
+    entries = []
+    mode = None; term = []; defn = []
+    def flush():
+        if not term: return
+        t = dehy(norm("".join(term))).strip(" .,;:")
+        d = dehy(norm("".join(defn))).strip()
+        d = re.sub(r'^[\s.,;:]+', '', d)
+        if len(t) >= 2 and len(d) >= 3:
+            entries.append({"term": t, "def": d})
+    for kind, txt in spans_in_order(doc):
+        if kind == "term":
+            if mode == "def":            # a new bold run closes the previous entry
+                flush(); term = []; defn = []
+            term.append(txt); mode = "term"
+        elif kind == "def":
+            defn.append(txt); mode = "def"
+        else:
+            (term if mode == "term" else defn).append(txt)
+    flush()
     doc.close()
-    print(f"V{v}: {len(out)} cumulative")
-G=sorted(out.values(), key=lambda g:g['term'].lower())
-json.dump(G,open(f"{SP}/glossary.json","w"),ensure_ascii=False)
-print("\nfinal terms:",len(G))
-for g in G[:6]+G[len(G)//2:len(G)//2+6]:
-    print(f"  {g['term'][:34]:34s} [{g['topic'][:12]}] {g['def'][:95]}")
+    # merge duplicate headwords, keeping the fullest definition
+    best = {}
+    for e in entries:
+        k = e["term"].lower()
+        if k not in best or len(e["def"]) > len(best[k]["def"]):
+            best[k] = e
+    return [best[k] for k in sorted(best)]
+
+if __name__ == "__main__":
+    G = extract(PDF)
+    json.dump(G, open(OUT, "w"), ensure_ascii=False, indent=0)
+    print(f"{len(G)} terms -> {OUT}")
+    lens = sorted(len(g["def"]) for g in G)
+    print(f"definition length: min {lens[0]}  median {lens[len(lens)//2]}  max {lens[-1]}")
+    for g in G[:4] + G[len(G)//2:len(G)//2+4]:
+        print(f"  {g['term'][:38]:38s} | {g['def'][:92]}")

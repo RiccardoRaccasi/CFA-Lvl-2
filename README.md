@@ -21,9 +21,10 @@ generated.
 | Exhibit tables | 279 in vignettes, 71 in solutions — as real tables |
 | Rendered formulas | 170 (stacked fractions cropped from the PDFs) |
 | Worked problems | 143 constructed-response items with solutions |
-| Glossary terms | 836, with the sentence that defines each one |
+| Glossary terms | 803, verbatim from the official glossary PDF |
+| Flashcards | the same 803 terms, in Leitner boxes 1-5 |
 
-## The three surfaces
+## The four surfaces
 
 **Curriculum** — browse topic → learning module. Each module shows its learning
 outcome statements, its full section outline with the printed page numbers, and
@@ -35,12 +36,19 @@ Level II is actually sat: one vignette and every question hanging off it.
 *Untouched* and *Flagged* draw from your own history. Answer, then the
 curriculum's own solution opens, with its tables and formulas intact.
 
+**Flashcards** — the glossary as a spaced-repetition deck. A card moves up a box
+when you know it and drops to box 1 when you don't, so the deck keeps returning
+what you keep missing. Five decks (due, new, struggling, starred, everything),
+filterable by topic, and runnable in either direction — term to definition, or
+definition to term.
+
 **Dashboard** — coverage and accuracy per topic against the exam's published
-weight, a ranked list of what to work on next, and session history.
+weight, vocabulary progress, a ranked list of what to work on next, and session
+history.
 
 ## Progress tracking
 
-Attempts, flags and session history live in the artifact's own store
+Attempts, flags, flashcard boxes and session history live in the artifact's own store
 (`progress/state`), so the same progress follows you across devices.
 `localStorage` mirrors it, so the page still works if the store is unreachable —
 the rail's footer says which is in effect.
@@ -53,7 +61,7 @@ so a heavy topic you are weak at outranks a light one you have merely not starte
 ```bash
 pip install pymupdf
 python3 tools/extract_curriculum.py   # -> curriculum2.json + mathimg2.json
-python3 tools/extract_glossary.py     # -> glossary.json
+python3 tools/extract_glossary.py     # -> glossary_official.json
 ```
 
 `app/data.js` and `app/math.js` are the bundled outputs. Formulas whose stacked
@@ -71,6 +79,18 @@ Notes on how the extraction works, since the PDFs carry no bookmarks:
   stripped after row assembly, where they merge into a single line.
 - Exhibits are recovered with `find_tables()` and kept as cell data; formulas
   win over table detection, since they sit in a different font.
+- The glossary is two-column, and the column origins shift between odd and even
+  pages, so the gutter is measured per page — and placed just left of the right
+  column's origin, not midway between the two, since left-column body text runs
+  well past that midpoint. Columns are also split per span rather than per line,
+  because PyMuPDF sometimes merges a line straight across the gutter.
+
+An earlier version of the glossary was derived from bold defined terms in the
+volume body text, before the official glossary PDF was available. Comparing the
+two, all 153 terms it held that the official glossary lacks were extraction
+fragments (`ates` from *interlocking directorates*, `of one price`), not real
+entries, so the official glossary replaced it outright. Topic tags are assigned
+by counting each term's occurrences across the ten volumes.
 
 ## Scope
 

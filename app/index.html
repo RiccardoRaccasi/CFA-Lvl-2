@@ -267,6 +267,29 @@ figure img{display:block;filter:var(--math-filter);max-width:100%}
 .revrow:hover{background:var(--inset)}
 .revrow .txt{font-size:13px;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 
+/* ---------- flashcards ---------- */
+.card{background:var(--raised);border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow-lift);overflow:hidden}
+.cardhead{display:flex;gap:10px;align-items:center;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--inset)}
+.side{padding:26px 24px}
+.side+.side{border-top:1px dashed var(--line2)}
+.side.reveal{background:color-mix(in srgb,var(--accent-wash) 55%,transparent)}
+.sidelabel{display:block;font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink3);font-weight:600;margin-bottom:10px}
+.cterm{font-family:var(--serif);font-size:clamp(23px,3.6vw,31px);font-weight:700;line-height:1.2;letter-spacing:-.015em;text-wrap:balance}
+.cdef{font-size:16px;line-height:1.62;max-width:62ch}
+.grade{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}
+.gbtn{display:flex;flex-direction:column;gap:2px;align-items:center;padding:14px 10px;border-radius:10px;
+  border:1px solid var(--line2);background:var(--raised);cursor:pointer;transition:transform .1s,background .12s}
+.gbtn:hover{transform:translateY(-1px)}
+.gbtn b{font-size:14.5px;font-weight:600}
+.gbtn span{font-size:11px;color:var(--ink3);font-family:var(--mono)}
+.gbtn.miss{border-color:var(--critical);color:var(--critical)}
+.gbtn.miss:hover{background:var(--critical-wash)}
+.gbtn.near{border-color:var(--warning)}
+.gbtn.near:hover{background:var(--warning-wash)}
+.gbtn.got{border-color:var(--good);color:var(--good)}
+.gbtn.got:hover{background:var(--good-wash)}
+#c-show svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;vertical-align:-2px;margin-right:4px}
+
 /* ---------- glossary ---------- */
 .gcontrols{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
 .gcontrols .field{flex:1 1 220px}
@@ -346,7 +369,7 @@ const WMID = {}; TOPICS.forEach(t => {
 });
 
 /* ---------- state ---------- */
-const BLANK = { q:{}, sessions:[], settings:{ examDate:"" } };
+const BLANK = { q:{}, g:{}, sessions:[], settings:{ examDate:"" } };
 let ST = JSON.parse(JSON.stringify(BLANK));
 let DB = null, dirty = false, writing = false, flushTimer = null;
 const LSKEY = "cfa-l2-workbench-v1";
@@ -381,6 +404,11 @@ function mergeState(remote){
   Object.keys(rq).forEach(id => {
     const a = ST.q[id], b = rq[id];
     if (!a || (b.t || 0) > (a.t || 0)) ST.q[id] = b;
+  });
+  const rg = remote.g || {};
+  Object.keys(rg).forEach(k => {
+    const a = ST.g[k], b = rg[k];
+    if (!a || (b.t || 0) > (a.t || 0)) ST.g[k] = b;
   });
   const seen = new Set(ST.sessions.map(s => s.id));
   (remote.sessions || []).forEach(s => { if (!seen.has(s.id)) ST.sessions.push(s); });
@@ -440,7 +468,9 @@ const ICON = {
   flag:'<path d="M4 21V4h11l-1.4 3.2L15 11H4"/>',
   chev:'<path d="m9 5 7 7-7 7"/>',
   left:'<path d="m14 5-7 7 7 7"/>',
-  warn:'<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17.4v.2" stroke="currentColor"/>'
+  warn:'<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17.4v.2" stroke="currentColor"/>',
+  cards:'<rect x="3" y="7" width="13" height="14" rx="2"/><path d="M8 4h11a2 2 0 0 1 2 2v11"/>',
+  turn:'<path d="M3 12a9 9 0 1 1 3 6.7"/><path d="M3 20v-5h5"/>'
 };
 function mono(n){ return '<span style="font-family:var(--mono);font-variant-numeric:tabular-nums">' + n + '</span>'; }
 function chip(acc, n){
@@ -520,13 +550,16 @@ const VIEWS = [
   { id:"dash", label:"Dashboard", icon:ICON.dash },
   { id:"curriculum", label:"Curriculum", icon:ICON.book },
   { id:"practice", label:"Practice", icon:ICON.target },
+  { id:"cards", label:"Flashcards", icon:ICON.cards },
   { id:"glossary", label:"Glossary", icon:ICON.list }
 ];
 function go(v, r){ view = v; route = r || {}; window.scrollTo(0,0); render(); }
 
 function renderNav(){
   const s = stats(ALLQ);
-  const tallies = { dash:"", curriculum:MODS.length + " LM", practice:s.seen + "/" + TOTALQ, glossary:GLOSS.length };
+  const gs = gstats(GLOSS);
+  const tallies = { dash:"", curriculum:MODS.length + " LM", practice:s.seen + "/" + TOTALQ,
+                    cards:gs.known + "/" + GLOSS.length, glossary:GLOSS.length };
   document.getElementById("nav").innerHTML = VIEWS.map(v =>
     '<button type="button" data-v="' + v.id + '" aria-current="' + (view === v.id) + '">' +
       ic(v.icon) + "<span>" + v.label + "</span>" +
@@ -603,6 +636,23 @@ function viewDash(){
   });
   h += "</div></div>";
 
+  // vocabulary
+  const gs = gstats(GLOSS);
+  h += '<div class="sec"><div class="sechead"><h2>Vocabulary</h2>' +
+    '<span class="note">Cards reach box 5 after you know them five times running</span></div>' +
+    '<div class="panel pad" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">' +
+    '<div style="flex:1;min-width:190px"><div style="display:flex;justify-content:space-between;' +
+      'font-size:12.5px;color:var(--ink2);margin-bottom:6px"><span>' + gs.known + " of " + gs.total +
+      " terms known</span><span style='font-family:var(--mono)'>" +
+      pct(gs.total ? gs.known / gs.total : 0) + "</span></div>" +
+      '<span class="meter" style="height:9px"><i style="width:' +
+      (gs.total ? (gs.known / gs.total) * 100 : 0).toFixed(1) + '%"></i></span>' +
+      '<div style="font-size:12px;color:var(--ink3);margin-top:7px">' +
+      gs.unseen + " never seen · " + gs.shaky + " in boxes 1-2" +
+      (gs.starred ? " · " + gs.starred + " starred" : "") + "</div></div>" +
+    '<button class="btn" id="cta-cards" type="button">' +
+      (gs.seen ? "Review due cards" : "Start the deck") + "</button></div></div>";
+
   // focus list
   h += '<div class="sec"><div class="sechead"><h2>What to work on next</h2>' +
        '<span class="note">Ranked by exam weight × weakness × unseen material</span></div>';
@@ -645,6 +695,8 @@ function viewDash(){
   if (cr) cr.onclick = () => startSession({ mode:"review", count:Math.min(15, reviewN), timed:false });
   const cf = node.querySelector("#cta-flag");
   if (cf) cf.onclick = () => startSession({ mode:"flagged", count:Math.min(15, flagN), timed:false });
+  const cc = node.querySelector("#cta-cards");
+  if (cc) cc.onclick = () => startCards({ deck:"due", topic:"", count:20 });
   const se = node.querySelector("#setexam");
   if (se) se.onclick = () => {
     const cur = ST.settings.examDate || "";
@@ -1126,6 +1178,251 @@ function viewSummary(){
 }
 
 /* =========================================================
+   FLASHCARDS  (Leitner boxes 1-5; box 5 counts as known)
+   ========================================================= */
+const GKEY = g => g.t.toLowerCase();
+function grec(g){ return ST.g[GKEY(g)] || null; }
+function gstats(list){
+  let seen = 0, known = 0, shaky = 0, starred = 0;
+  list.forEach(g => {
+    const r = grec(g);
+    if (!r) return;
+    if (r.s) starred++;
+    if (!r.n) return;
+    seen++;
+    if ((r.box || 1) >= 5) known++;
+    else if ((r.box || 1) <= 2) shaky++;
+  });
+  return { total:list.length, seen, known, shaky, starred, unseen:list.length - seen };
+}
+const CSETUP = { dir:"t2d", topic:"", deck:"due", count:20 };
+const DECKS = [
+  { id:"due",     b:"Due for review", d:"Weakest boxes first, then cards you have never turned." },
+  { id:"unseen",  b:"New terms", d:"Terms you have not seen yet." },
+  { id:"shaky",   b:"Struggling", d:"Cards sitting in boxes 1 and 2." },
+  { id:"starred", b:"Starred", d:"Cards you marked to come back to." },
+  { id:"all",     b:"Everything", d:"The full deck, shuffled." }
+];
+function cardPool(cfg){
+  let pool = GLOSS;
+  if (cfg.topic) pool = pool.filter(g => g.tp === cfg.topic);
+  if (cfg.deck === "unseen")  return pool.filter(g => { const r = grec(g); return !r || !r.n; });
+  if (cfg.deck === "shaky")   return pool.filter(g => { const r = grec(g); return r && r.n && (r.box || 1) <= 2; });
+  if (cfg.deck === "starred") return pool.filter(g => { const r = grec(g); return r && r.s; });
+  if (cfg.deck === "due"){
+    const scored = pool.map(g => {
+      const r = grec(g);
+      if (!r || !r.n) return { g, w: 2 };            // unseen sits mid-priority
+      if ((r.box || 1) >= 5) return { g, w: 99 };    // known: last
+      return { g, w: (r.box || 1) };
+    });
+    scored.sort((a, b) => a.w - b.w || Math.random() - 0.5);
+    return scored.filter(s => s.w < 99).map(s => s.g);
+  }
+  return pool;
+}
+let DECK = null;
+function startCards(cfg){
+  const c = Object.assign({}, CSETUP, cfg);
+  const pool = cardPool(c);
+  if (!pool.length){ alert("That deck is empty. Try another deck or a wider topic."); return; }
+  const list = c.deck === "due" ? pool.slice(0, c.count) : shuffle(pool).slice(0, c.count);
+  DECK = { cfg:c, cards:list, i:0, shown:false, graded:new Array(list.length).fill(null),
+           started:Date.now(), ended:false };
+  go("cards", { run:true });
+}
+function gradeCard(score){
+  const g = DECK.cards[DECK.i];
+  if (DECK.graded[DECK.i] !== null) return;
+  DECK.graded[DECK.i] = score;
+  const k = GKEY(g);
+  const r = ST.g[k] || (ST.g[k] = { n:0, c:0, box:1, s:false, t:0 });
+  r.n++;
+  if (score === 2){ r.c++; r.box = Math.min(5, (r.box || 1) + 1); }
+  else if (score === 1){ r.box = Math.max(1, (r.box || 1)); }
+  else { r.box = 1; }
+  r.t = Date.now();
+  touch();
+  if (DECK.i === DECK.cards.length - 1){ DECK.ended = true; }
+  else { DECK.i++; DECK.shown = false; }
+  render();
+}
+function viewCards(){
+  if (DECK && route.run) return DECK.ended ? viewCardSummary() : viewCardRunner();
+  return viewCardSetup();
+}
+function viewCardSetup(){
+  const s = gstats(GLOSS);
+  let h = '<div class="wrap"><p class="eyebrow">Flashcards</p><h1>Drill the vocabulary</h1>' +
+    '<p class="sub">All ' + GLOSS.length + " terms from the curriculum's own glossary, with its definitions " +
+    "word for word. Cards move up a box when you know them and drop back to box 1 when you don't, " +
+    "so the deck keeps returning to what you keep missing.</p>";
+
+  h += '<div class="sec"><div class="readout">' +
+    '<div><div class="k">Known</div><div class="v">' + s.known + ' <small>/ ' + s.total + "</small></div>" +
+      '<div class="m">reached box 5</div></div>' +
+    '<div><div class="k">In progress</div><div class="v">' + (s.seen - s.known) + "</div>" +
+      '<div class="m">' + s.shaky + " in boxes 1-2</div></div>" +
+    '<div><div class="k">Not yet seen</div><div class="v">' + s.unseen + "</div></div>" +
+    '<div><div class="k">Starred</div><div class="v">' + s.starred + "</div></div></div></div>";
+
+  h += '<div class="sec"><h2>Deck</h2><div class="optgrid" id="decks">';
+  DECKS.forEach(d => {
+    const n = cardPool({ deck:d.id, topic:CSETUP.topic }).length;
+    h += '<button class="opt" type="button" data-deck="' + d.id + '" aria-pressed="' + (CSETUP.deck === d.id) + '">' +
+      "<b>" + esc(d.b) + "</b><span>" + esc(d.d) + '</span><span class="cnt">' + n + " cards</span></button>";
+  });
+  h += "</div></div>";
+
+  h += '<div class="sec"><h2>How to show them</h2><div class="panel pad"><div class="inline">';
+  h += '<div class="field"><label for="c-dir">Card front</label><select id="c-dir">' +
+    '<option value="t2d"' + (CSETUP.dir === "t2d" ? " selected" : "") + ">Term first — recall the definition</option>" +
+    '<option value="d2t"' + (CSETUP.dir === "d2t" ? " selected" : "") + ">Definition first — name the term</option>" +
+    "</select></div>";
+  h += '<div class="field"><label for="c-topic">Topic area</label><select id="c-topic"><option value="">All topics</option>' +
+    TOPICS.map(t => '<option value="' + esc(t.name) + '"' + (CSETUP.topic === t.name ? " selected" : "") + ">" +
+      esc(t.name) + "</option>").join("") + "</select></div>";
+  h += '<div class="field" style="flex:0 1 140px"><label for="c-count">Cards</label>' +
+    '<input type="number" id="c-count" min="5" max="120" value="' + CSETUP.count + '"></div>';
+  h += '<button class="btn" id="c-start" type="button">Start</button>';
+  h += "</div></div></div>";
+
+  // per-topic progress
+  h += '<div class="sec"><div class="sechead"><h2>Vocabulary by topic</h2>' +
+    '<span class="note">Bar = terms that have reached box 5</span></div><div class="panel matrix">';
+  TOPICS.forEach(t => {
+    const list = GLOSS.filter(g => g.tp === t.name);
+    if (!list.length) return;
+    const ts = gstats(list);
+    h += '<div class="mrow" style="cursor:default">' +
+      '<span class="mname"><b>' + esc(t.name) + "</b>" +
+        '<span class="mmeta"><span>' + list.length + " terms · " + ts.seen + " seen</span></span></span>" +
+      '<span><span class="meter"><i style="width:' + (list.length ? (ts.known / list.length) * 100 : 0).toFixed(1) +
+        '%"></i></span><span class="mcov">' + ts.known + "/" + list.length + "</span></span>" +
+      '<span class="chipcell"><button class="btn sm sec" data-tdeck="' + esc(t.name) + '" type="button">Drill</button></span></div>';
+  });
+  h += "</div></div></div>";
+
+  const node = el("<div>" + h + "</div>");
+  node.querySelectorAll("[data-deck]").forEach(b => b.onclick = () => { CSETUP.deck = b.dataset.deck; render(); });
+  node.querySelector("#c-dir").onchange = e => { CSETUP.dir = e.target.value; };
+  node.querySelector("#c-topic").onchange = e => { CSETUP.topic = e.target.value; render(); };
+  node.querySelector("#c-count").onchange = e => { CSETUP.count = Math.max(5, Math.min(120, +e.target.value || 20)); };
+  node.querySelector("#c-start").onclick = () => {
+    CSETUP.count = Math.max(5, Math.min(120, +node.querySelector("#c-count").value || 20));
+    CSETUP.dir = node.querySelector("#c-dir").value;
+    startCards({});
+  };
+  node.querySelectorAll("[data-tdeck]").forEach(b => b.onclick = () => {
+    CSETUP.topic = b.dataset.tdeck; startCards({ topic:b.dataset.tdeck });
+  });
+  return node;
+}
+function viewCardRunner(){
+  const g = DECK.cards[DECK.i];
+  const r = grec(g), box = r && r.n ? (r.box || 1) : 0;
+  const front = DECK.cfg.dir === "t2d" ? g.t : g.d;
+  const back  = DECK.cfg.dir === "t2d" ? g.d : g.t;
+  const frontLabel = DECK.cfg.dir === "t2d" ? "Term" : "Definition";
+  const backLabel  = DECK.cfg.dir === "t2d" ? "Definition" : "Term";
+  const done = DECK.graded.filter(x => x !== null).length;
+
+  let h = '<div class="runbar">' +
+    '<span class="pos">Card ' + (DECK.i + 1) + " / " + DECK.cards.length + "</span>" +
+    '<span class="bar"><i style="width:' + ((done / DECK.cards.length) * 100).toFixed(1) + '%"></i></span>' +
+    '<span class="score">' + (box ? "Box " + box : "New") + "</span>" +
+    '<button class="ghost" id="c-end" type="button">End</button></div>';
+
+  h += '<div class="wrap" style="padding-block:24px 64px">';
+  h += '<div class="card"><div class="cardhead">' +
+    '<span class="qsrc">' + esc(g.tp) + (g.v ? " · Volume " + g.v : "") + "</span>" +
+    '<button class="flagbtn" id="c-star" type="button" aria-pressed="' + (!!(r && r.s)) + '">' +
+    ic(ICON.flag) + "Star</button></div>";
+  h += '<div class="side"><span class="sidelabel">' + frontLabel + "</span>" +
+    '<div class="' + (DECK.cfg.dir === "t2d" ? "cterm" : "cdef") + '">' + esc(front) + "</div></div>";
+  if (DECK.shown){
+    h += '<div class="side reveal"><span class="sidelabel">' + backLabel + "</span>" +
+      '<div class="' + (DECK.cfg.dir === "t2d" ? "cdef" : "cterm") + '">' + esc(back) + "</div></div>";
+  }
+  h += "</div>";
+
+  if (!DECK.shown){
+    h += '<div class="runfoot"><span class="spacer"></span>' +
+      '<button class="btn" id="c-show" type="button">' + ic(ICON.turn) + " Turn the card</button>" +
+      '<span class="spacer"></span></div>' +
+      '<p style="text-align:center;font-size:12.5px;color:var(--ink3);margin-top:12px">' +
+      "Say it out loud first — then check.</p>";
+  } else {
+    h += '<div class="grade"><button class="gbtn miss" data-g="0" type="button"><b>Missed</b>' +
+      "<span>back to box 1</span></button>" +
+      '<button class="gbtn near" data-g="1" type="button"><b>Almost</b><span>stay in box ' + Math.max(1, box || 1) + "</span></button>" +
+      '<button class="gbtn got" data-g="2" type="button"><b>Knew it</b><span>box ' +
+      Math.min(5, (box || 1) + 1) + "</span></button></div>";
+  }
+  h += "</div>";
+
+  const node = el("<div>" + h + "</div>");
+  const sh = node.querySelector("#c-show");
+  if (sh) sh.onclick = () => { DECK.shown = true; render(); };
+  node.querySelectorAll("[data-g]").forEach(b => b.onclick = () => gradeCard(+b.dataset.g));
+  node.querySelector("#c-star").onclick = e => {
+    const k = GKEY(g);
+    const cur = ST.g[k] || (ST.g[k] = { n:0, c:0, box:1, s:false, t:0 });
+    cur.s = !cur.s; cur.t = Date.now(); touch();
+    e.currentTarget.setAttribute("aria-pressed", String(cur.s));
+  };
+  node.querySelector("#c-end").onclick = () => {
+    if (DECK.graded.every(x => x === null)){ DECK = null; go("cards", {}); return; }
+    DECK.ended = true; render();
+  };
+  return node;
+}
+function viewCardSummary(){
+  const graded = DECK.graded.map((v, i) => ({ v, g:DECK.cards[i] })).filter(x => x.v !== null);
+  const got = graded.filter(x => x.v === 2).length;
+  const near = graded.filter(x => x.v === 1).length;
+  const miss = graded.filter(x => x.v === 0).length;
+  const secs = Math.round((Date.now() - DECK.started) / 1000);
+  const toRedo = graded.filter(x => x.v < 2).map(x => x.g);
+
+  let h = '<div class="wrap"><p class="eyebrow">Deck complete</p>';
+  h += "<h1>" + got + " of " + graded.length + " known</h1>";
+  h += '<p class="sub">' + (miss === 0 ? "Clean run — those cards all moved up a box."
+    : "The " + (miss + near) + " you did not nail are queued up again below.") + "</p>";
+  h += '<div class="sec"><div class="sumgrid">' +
+    '<div><div class="k" style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);font-weight:600">Knew it</div>' +
+      '<div style="font-family:var(--mono);font-size:25px;font-weight:600;margin-top:7px;color:var(--good)">' + got + "</div></div>" +
+    '<div><div class="k" style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);font-weight:600">Almost</div>' +
+      '<div style="font-family:var(--mono);font-size:25px;font-weight:600;margin-top:7px">' + near + "</div></div>" +
+    '<div><div class="k" style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);font-weight:600">Missed</div>' +
+      '<div style="font-family:var(--mono);font-size:25px;font-weight:600;margin-top:7px;color:var(--critical)">' + miss + "</div></div>" +
+    '<div><div class="k" style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);font-weight:600">Time</div>' +
+      '<div style="font-family:var(--mono);font-size:25px;font-weight:600;margin-top:7px">' +
+      Math.floor(secs / 60) + "m " + (secs % 60) + "s</div></div></div></div>";
+  if (toRedo.length){
+    h += '<div class="sec"><div class="sechead"><h2>Still to land</h2></div><div class="panel glist">' +
+      toRedo.map(g => '<div class="gitem"><dt style="font-family:var(--serif);font-weight:600">' + esc(g.t) +
+        '</dt><dd style="margin:5px 0 0;font-size:13.5px;color:var(--ink2)">' + esc(g.d) + "</dd></div>").join("") +
+      "</div></div>";
+  }
+  h += '<div class="sec" style="display:flex;gap:10px;flex-wrap:wrap">' +
+    (toRedo.length ? '<button class="btn" id="c-redo" type="button">Redo these ' + toRedo.length + "</button>" : "") +
+    '<button class="btn sec" id="c-new" type="button">New deck</button>' +
+    '<button class="btn sec" id="c-dash" type="button">Back to dashboard</button></div></div>';
+
+  const node = el("<div>" + h + "</div>");
+  const rd = node.querySelector("#c-redo");
+  if (rd) rd.onclick = () => {
+    DECK = { cfg:DECK.cfg, cards:shuffle(toRedo), i:0, shown:false,
+             graded:new Array(toRedo.length).fill(null), started:Date.now(), ended:false };
+    render();
+  };
+  node.querySelector("#c-new").onclick = () => { DECK = null; go("cards", {}); };
+  node.querySelector("#c-dash").onclick = () => { DECK = null; go("dash", {}); };
+  return node;
+}
+
+/* =========================================================
    GLOSSARY
    ========================================================= */
 const GST = { q:"", topic:"" };
@@ -1183,6 +1480,7 @@ function render(){
   const node = view === "dash" ? viewDash()
     : view === "curriculum" ? viewCurriculum()
     : view === "practice" ? viewPractice()
+    : view === "cards" ? viewCards()
     : viewGlossary();
   main.replaceChildren(node);
 }
@@ -1191,6 +1489,11 @@ document.getElementById("nav").addEventListener("click", e => {
   if (!b) return;
   if (SESS && !SESS.ended && b.dataset.v !== "practice"){
     if (!confirm("Leave this session? Answers you've already given are saved.")) return;
+    SESS = null;                       // leaving ends it, so nav stops re-asking
+  }
+  if (DECK && !DECK.ended && b.dataset.v !== "cards"){
+    if (!confirm("Leave this deck? Cards you've already graded are saved.")) return;
+    DECK = null;
   }
   go(b.dataset.v, {});
 });
